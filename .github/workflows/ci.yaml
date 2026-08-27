@@ -25,22 +25,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install tox
+      - name: Install package and smoke-import (no live DB)
         run: |
           python -m pip install --upgrade pip
-          pip install tox
-      - name: Build test environment and smoke-import (no live DB)
-        run: |
-          # Resolve/install the full testing dependency set for this Python
-          # version without running the DB-backed tests, then import the
-          # package. This validates each version reliably and stays green.
-          case "${{ matrix.python-version }}" in
-            3.9)  tox -e py39  --notest ;;
-            3.10) tox -e py310 --notest ;;
-            3.11) tox -e py311 --notest ;;
-            3.12) tox -e py312 --notest ;;
-          esac
-          pip install .
+          # verticapy imports IPython at top level (sql_magic), so it is needed
+          # for the import smoke test even though it is not in install_requires.
+          pip install . ipython
           python -c "import verticapy; print('verticapy', verticapy.__version__)"
 
   # ---------------------------------------------------------------------------
