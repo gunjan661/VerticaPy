@@ -34,13 +34,38 @@ jobs:
           python -c "import verticapy; print('verticapy', verticapy.__version__)"
 
   # ---------------------------------------------------------------------------
+  # Determine whether a Vertica license is available. The VerticaDB operator
+  # requires a non-empty licenseSecret, and secrets are not exposed to fork PRs,
+  # so the integration job below only runs when VERTICA_LICENSE is present.
+  # ---------------------------------------------------------------------------
+  license-check:
+    runs-on: ubuntu-latest
+    outputs:
+      run_licensed: ${{ steps.check.outputs.run_licensed }}
+    steps:
+      - name: Check Vertica license availability
+        id: check
+        env:
+          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
+        run: |
+          if [ -z "${VERTICA_LICENSE:-}" ]; then
+            echo "::notice::VERTICA_LICENSE is unavailable (e.g. fork PR). Skipping the Vertica integration tests."
+            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_licensed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
   # Full integration tests against a real Vertica deployed via the VerticaDB
   # operator on KinD. Runs on a single Python version because the bring-up is
-  # heavy. Marked non-blocking (continue-on-error) while the hosted-runner
-  # integration is being stabilized -- remove `continue-on-error` once it is
-  # consistently green so the tests gate merges again.
+  # heavy, and only when a license is available (the operator requires one).
+  # Marked non-blocking (continue-on-error) while the hosted-runner integration
+  # is being stabilized -- remove `continue-on-error` once it is consistently
+  # green so the tests gate merges again.
   # ---------------------------------------------------------------------------
   integration-tests:
+    needs: license-check
+    if: needs.license-check.outputs.run_licensed == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -153,32 +178,9 @@ jobs:
             --from-literal=secretkey="minioadmin"
 
       # ---------------------------
-      # Optional Vertica license (fork-aware)
-      # The operator runs in Community Edition without a license, so a missing
-      # secret (e.g. on fork PRs) is a notice, not a failure.
+      # Vertica license (this job only runs when VERTICA_LICENSE is available)
       # ---------------------------
-      - name: Check Vertica license availability
-        id: license-check
-        env:
-          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
-        run: |
-          is_fork="${{ github.event.pull_request.head.repo.fork }}"
-
-          if [ "$is_fork" = "true" ] && [ -z "${VERTICA_LICENSE:-}" ]; then
-            echo "::notice::Fork PR detected — VERTICA_LICENSE secret is unavailable. Deploying in Community Edition mode."
-            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "${VERTICA_LICENSE:-}" ]; then
-            echo "::notice::VERTICA_LICENSE secret is not set. Deploying in Community Edition mode."
-            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "run_licensed=true" >> "$GITHUB_OUTPUT"
       - name: Create Vertica license secret
-        if: steps.license-check.outputs.run_licensed == 'true'
         env:
           VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
         run: |
@@ -235,6 +237,7 @@ jobs:
             image: opentext/vertica-k8s:latest
             dbName: vdb
             initPolicy: Create
+            licenseSecret: vertica-license
             communal:
               path: s3://vertica-fleeting/verticapy-ci/
               credentialSecret: communal-creds
@@ -247,12 +250,6 @@ jobs:
               - name: defaultsubcluster
                 size: 1
           EOF
-
-          # Add licenseSecret only when a license is available. The operator
-          # rejects an empty value, so in CE mode the field must be absent.
-          if [ "${{ steps.license-check.outputs.run_licensed }}" = "true" ]; then
-            sed -i 's|^  initPolicy: Create$|  initPolicy: Create\n  licenseSecret: vertica-license|' /tmp/verticadb.yaml
-          fi
 
           echo "--- VerticaDB manifest ---"
           cat /tmp/verticadb.yaml

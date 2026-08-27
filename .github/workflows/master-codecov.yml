@@ -7,8 +7,30 @@ on:
     branches:
       - master
 jobs:
+  # Determine whether a Vertica license is available. The VerticaDB operator
+  # requires a non-empty licenseSecret, and secrets are not exposed to fork PRs,
+  # so the coverage job only runs when VERTICA_LICENSE is present.
+  license-check:
+    runs-on: ubuntu-latest
+    outputs:
+      run_licensed: ${{ steps.check.outputs.run_licensed }}
+    steps:
+      - name: Check Vertica license availability
+        id: check
+        env:
+          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
+        run: |
+          if [ -z "${VERTICA_LICENSE:-}" ]; then
+            echo "::notice::VERTICA_LICENSE is unavailable (e.g. fork PR). Skipping the coverage job."
+            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_licensed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   codecov:
     name: Codecov Workflow
+    needs: license-check
+    if: needs.license-check.outputs.run_licensed == 'true'
     runs-on: ubuntu-latest
     # Coverage needs a live Vertica brought up via the operator on KinD, which is
     # heavy on hosted runners. Marked non-blocking so the coverage signal stays
@@ -118,31 +140,9 @@ jobs:
             --from-literal=secretkey="minioadmin"
 
       # ---------------------------
-      # Optional Vertica license (fork-aware). Fork PRs have no secret and run
-      # in Community Edition mode.
+      # Vertica license (this job only runs when VERTICA_LICENSE is available)
       # ---------------------------
-      - name: Check Vertica license availability
-        id: license-check
-        env:
-          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
-        run: |
-          is_fork="${{ github.event.pull_request.head.repo.fork }}"
-
-          if [ "$is_fork" = "true" ] && [ -z "${VERTICA_LICENSE:-}" ]; then
-            echo "::notice::Fork PR detected — VERTICA_LICENSE secret is unavailable. Deploying in Community Edition mode."
-            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "${VERTICA_LICENSE:-}" ]; then
-            echo "::notice::VERTICA_LICENSE secret is not set. Deploying in Community Edition mode."
-            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "run_licensed=true" >> "$GITHUB_OUTPUT"
       - name: Create Vertica license secret
-        if: steps.license-check.outputs.run_licensed == 'true'
         env:
           VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
         run: |
@@ -165,7 +165,7 @@ jobs:
           rm -f /tmp/license.dat
 
       # ---------------------------
-      # Vertica operator + DB deployment (Community Edition)
+      # Vertica operator + DB deployment
       # ---------------------------
       - name: Install Vertica Operator
         run: |
@@ -195,6 +195,7 @@ jobs:
             image: opentext/vertica-k8s:latest
             dbName: vdb
             initPolicy: Create
+            licenseSecret: vertica-license
             communal:
               path: s3://vertica-fleeting/verticapy-codecov/
               credentialSecret: communal-creds
@@ -207,12 +208,6 @@ jobs:
               - name: defaultsubcluster
                 size: 1
           EOF
-
-          # Add licenseSecret only when a license is available. The operator
-          # rejects an empty value, so in CE mode the field must be absent.
-          if [ "${{ steps.license-check.outputs.run_licensed }}" = "true" ]; then
-            sed -i 's|^  initPolicy: Create$|  initPolicy: Create\n  licenseSecret: vertica-license|' /tmp/verticadb.yaml
-          fi
 
           echo "--- VerticaDB manifest ---"
           cat /tmp/verticadb.yaml
