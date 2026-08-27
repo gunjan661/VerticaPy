@@ -37,6 +37,68 @@ jobs:
           echo "Vertica is up"
           docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "\l"
           docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "select version();"
+      - name: Check Vertica license availability
+        id: license-check
+        env:
+          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
+        run: |
+          is_fork="${{ github.event.pull_request.head.repo.fork }}"
+
+          if [ "$is_fork" = "true" ] && [ -z "${VERTICA_LICENSE:-}" ]; then
+            echo "::notice::Fork PR detected — VERTICA_LICENSE secret is unavailable. Running with the built-in Community Edition license."
+            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # License is optional: Community Edition works without it, so a missing
+          # secret on internal runs is a notice, not a hard failure.
+          if [ -z "${VERTICA_LICENSE:-}" ]; then
+            echo "::notice::VERTICA_LICENSE secret is not set. Running with the built-in Community Edition license."
+            echo "run_licensed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "run_licensed=true" >> "$GITHUB_OUTPUT"
+      - name: Apply Vertica license
+        if: steps.license-check.outputs.run_licensed == 'true'
+        env:
+          VERTICA_LICENSE: ${{ secrets.VERTICA_LICENSE }}
+        run: |
+          set -uo pipefail
+
+          # Accept both base64-encoded and raw license content (without echoing the value).
+          # Try base64 decode first; if that fails, treat the secret as raw license text.
+          if printf '%s' "${VERTICA_LICENSE}" | base64 -d > /tmp/license.dat 2>/dev/null && [ -s /tmp/license.dat ]; then
+            echo "Decoded VERTICA_LICENSE as base64."
+          else
+            printf '%s' "${VERTICA_LICENSE}" > /tmp/license.dat
+            echo "Using VERTICA_LICENSE as raw license content."
+          fi
+
+          # Guard: ensure the resulting license file is non-empty
+          if [ ! -s /tmp/license.dat ]; then
+            echo "::error::Resulting license file is empty. Check the 'VERTICA_LICENSE' secret value."
+            rm -f /tmp/license.dat
+            exit 1
+          fi
+
+          # /tmp is bind-mounted into the container (-v /tmp:/tmp), so the file is visible inside.
+          # Vertica applies a license via admintools 'upgrade_license_key' (there is no SQL
+          # install function). This is best-effort: the CE image runs fine without a license,
+          # so any failure here downgrades to a warning instead of failing the pipeline.
+          chmod 400 /tmp/license.dat || true
+          if docker exec -u dbadmin vertica_docker \
+               /opt/vertica/bin/admintools -t upgrade_license_key -d VMart -l /tmp/license.dat; then
+            echo "Vertica license applied."
+          else
+            echo "::warning::Could not apply VERTICA_LICENSE; continuing with the built-in Community Edition license."
+          fi
+
+          # Show current compliance status (best-effort).
+          docker exec -u dbadmin vertica_docker \
+            /opt/vertica/bin/vsql -c "SELECT get_compliance_status();" || true
+
+          rm -f /tmp/license.dat
       - name: Install dependencies
         run: |
           echo "Install tox"

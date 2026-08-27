@@ -51,7 +51,28 @@ jobs:
           elif ${{ matrix.python-version == '3.12' }}; then
             tox -e py312 -- --cov=./ --cov-report=xml
           fi          
+      - name: Check Codecov token availability
+        id: codecov-check
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          is_fork="${{ github.event.pull_request.head.repo.fork }}"
+
+          if [ "$is_fork" = "true" ] && [ -z "${CODECOV_TOKEN:-}" ]; then
+            echo "::notice::Fork PR detected — CODECOV_TOKEN secret is unavailable. Skipping coverage upload."
+            echo "run_codecov=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For internal PRs and pushes, the token must be present
+          if [ -z "${CODECOV_TOKEN:-}" ]; then
+            echo "::error::GitHub secret 'CODECOV_TOKEN' is not set or is empty. Configure it under repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          echo "run_codecov=true" >> "$GITHUB_OUTPUT"
       - name: Upload coverage to Codecov
+        if: steps.codecov-check.outputs.run_codecov == 'true'
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
