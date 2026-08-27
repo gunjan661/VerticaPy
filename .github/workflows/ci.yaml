@@ -223,11 +223,7 @@ jobs:
           kubectl -n my-verticadb-operator get pods -o wide || true
       - name: Deploy VerticaDB
         run: |
-          LICENSE_LINE=""
-          if [ "${{ steps.license-check.outputs.run_licensed }}" = "true" ]; then
-            LICENSE_LINE="  licenseSecret: vertica-license"
-          fi
-          cat <<EOF | kubectl apply -f -
+          cat > /tmp/verticadb.yaml <<'EOF'
           apiVersion: vertica.com/v1
           kind: VerticaDB
           metadata:
@@ -239,7 +235,6 @@ jobs:
             image: opentext/vertica-k8s:latest
             dbName: vdb
             initPolicy: Create
-          ${LICENSE_LINE}
             communal:
               path: s3://vertica-fleeting/verticapy-ci/
               credentialSecret: communal-creds
@@ -252,6 +247,16 @@ jobs:
               - name: defaultsubcluster
                 size: 1
           EOF
+
+          # Add licenseSecret only when a license is available. The operator
+          # rejects an empty value, so in CE mode the field must be absent.
+          if [ "${{ steps.license-check.outputs.run_licensed }}" = "true" ]; then
+            sed -i 's|^  initPolicy: Create$|  initPolicy: Create\n  licenseSecret: vertica-license|' /tmp/verticadb.yaml
+          fi
+
+          echo "--- VerticaDB manifest ---"
+          cat /tmp/verticadb.yaml
+          kubectl apply -f /tmp/verticadb.yaml
       - name: Wait for Vertica readiness
         run: |
           NS=my-verticadb-operator
