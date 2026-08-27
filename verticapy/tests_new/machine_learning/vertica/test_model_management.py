@@ -286,6 +286,7 @@ class TestModelManagement:
             py_res, rel=rel_abs_tol_map[model_class]["load_model"]["rel"]
         )
 
+
 class TestModelManagementFromDB:
     """
     Focused test class for load_model_from_database functionality
@@ -329,47 +330,51 @@ class TestModelManagementFromDB:
         # No need to skip - we only have vertica category now
 
         py_model_obj = get_py_model(model_class)
-        
+
         # Create a unique model name for this test
         model_name = f"test_load_db_{model_class.lower()}"
         full_model_name = f"{schema_loader}.{model_name}"
-        
+
         # Clean up any existing model
         vp.drop(name=full_model_name, method="model")
-        
+
         # Step 1: Create and fit a fresh model with a specific name (this saves it to database)
         model_class_obj = getattr(
             __import__("verticapy.machine_learning.vertica", fromlist=[model_class]),
-            model_class
+            model_class,
         )
-        
-        # Create model with name (this will save it to the database when fitted) 
+
+        # Create model with name (this will save it to the database when fitted)
         original_model = model_class_obj(name=full_model_name)
-        
+
         # Fit the model with appropriate data and features based on model type
         if model_class in [
             "RandomForestRegressor",
-            "DecisionTreeRegressor", 
+            "DecisionTreeRegressor",
             "DummyTreeRegressor",
             "XGBRegressor",
             "Ridge",
-            "Lasso", 
+            "Lasso",
             "ElasticNet",
             "LinearRegression",
             "LinearSVR",
             "PoissonRegressor",
         ]:
             # Regression models - use winequality dataset
-            original_model.fit(winequality_vpy_fun, ["citric_acid", "residual_sugar", "alcohol"], "quality")
+            original_model.fit(
+                winequality_vpy_fun,
+                ["citric_acid", "residual_sugar", "alcohol"],
+                "quality",
+            )
         elif model_class in [
             "RandomForestClassifier",
             "DecisionTreeClassifier",
-            "DummyTreeClassifier", 
+            "DummyTreeClassifier",
             "XGBClassifier",
         ]:
-            # Classification models - use titanic dataset  
+            # Classification models - use titanic dataset
             original_model.fit(titanic_vd_fun, ["age", "fare", "sex"], "survived")
-        
+
         # Step 2: Load the model from database using its name (this is what users do)
         loaded_model = load_model(name=full_model_name)
 
@@ -400,7 +405,9 @@ class TestModelManagementFromDB:
                 "db_prediction",
             )
             vpy_res = np.mean(
-                list(chain(*np.array(pred_vdf[["db_prediction"]].to_list(), dtype=float)))
+                list(
+                    chain(*np.array(pred_vdf[["db_prediction"]].to_list(), dtype=float))
+                )
             )
             py_res = py_model_obj.pred.mean()
 
@@ -412,7 +419,7 @@ class TestModelManagementFromDB:
         assert vpy_res == pytest.approx(
             py_res, rel=rel_abs_tol_map[model_class]["load_model"]["rel"]
         )
-        
+
         # Clean up
         vp.drop(name=full_model_name, method="model")
 
